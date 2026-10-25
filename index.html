@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LogicCoach</title>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--fg:#e2e8f0;--ac:#38bdf8;--bad:#f87171;--ok:#4ade80}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);line-height:1.5}
+main{max-width:820px;margin:auto;padding:16px}
+h1{margin:0 0 4px}
+.card{background:var(--card);border-radius:12px;padding:16px;margin:12px 0}
+textarea,input,select{width:100%;padding:10px;border-radius:8px;border:1px solid #475569;background:#0b1220;color:var(--fg);font:inherit}
+button{padding:10px 16px;border:0;border-radius:8px;background:var(--ac);color:#04121f;font-weight:700;cursor:pointer;margin:6px 6px 0 0}
+button.alt{background:#334155;color:var(--fg)}
+button:disabled{opacity:.5}
+.tabs button{background:#334155;color:var(--fg)}
+.tabs button.on{background:var(--ac);color:#04121f}
+pre{white-space:pre-wrap;word-break:break-word;background:#0b1220;padding:12px;border-radius:8px;overflow:auto}
+.opt{display:block;width:100%;text-align:left;background:#334155;color:var(--fg);font-weight:500}
+.bad{color:var(--bad)}.ok{color:var(--ok)}.small{opacity:.7;font-size:.85em}
+.row{display:flex;gap:8px}.row>*{flex:1}
+#exp,#rescue{white-space:pre-wrap}
+</style>
+</head>
+<body>
+<main>
+<h1>LogicCoach</h1>
+<div class="small">Understand the logic, see the flowchart, practise with a quiz, then get the code. Powered by an open-weight Gemma model via Ollama.</div>
+
+<div class="card row">
+  <div><label class="small">Model</label><select id="model"></select></div>
+  <div><label class="small">Ollama URL</label><input id="host" value="http://localhost:11434"></div>
+</div>
+<div id="status" class="small"></div>
+
+<div class="tabs"><button id="t1" class="on" onclick="tab(1)">Learn</button><button id="t2" onclick="tab(2)">Quiz</button></div>
+
+<div class="card">
+  <label>Your programming question / problem</label>
+  <textarea id="q" rows="3" placeholder="e.g. Check whether a number is prime"></textarea>
+</div>
+
+<section id="p1">
+  <button onclick="explain()">Explain the logic + flowchart</button>
+  <div class="card" id="exp" hidden></div>
+  <div class="card" id="flow" hidden></div>
+  <div id="codebox" hidden>
+    <div class="card">
+      <label>Which language do you want the exact code in?</label>
+      <div class="row"><select id="lang"><option>Python</option><option>C</option><option>C++</option></select><button onclick="getCode()">Get code</button></div>
+      <pre id="code" hidden></pre>
+    </div>
+  </div>
+</section>
+
+<section id="p2" hidden>
+  <button onclick="startQuiz()">Start 10-question quiz on this topic</button>
+  <div class="card" id="quiz" hidden></div>
+  <div class="card" id="rescue" hidden></div>
+</section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let questions=[],idx=0,fails=0,wrongLog=[];
+try{mermaid.initialize({startOnLoad:false,theme:'dark'})}catch(e){}
+
+function tab(n){$('p1').hidden=n!=1;$('p2').hidden=n!=2;$('t1').className=n==1?'on':'';$('t2').className=n==2?'on':''}
+function setStatus(t){$('status').textContent=t}
+
+async function loadModels(){
+  try{
+    const r=await fetch($('host').value+'/api/tags');const j=await r.json();
+    const names=j.models.map(m=>m.name);
+    $('model').innerHTML=names.map(n=>`<option>${n}</option>`).join('');
+    const g=names.find(n=>/gemma/i.test(n));if(g)$('model').value=g;
+    setStatus('Connected to Ollama. Works offline.');
+  }catch(e){
+    setStatus('Cannot reach Ollama. Start it with OLLAMA_ORIGINS="*" ollama serve');
+  }
+}
+$('host').addEventListener('change',loadModels);loadModels();
+
+async function ask(prompt,json=false){
+  const body={model:$('model').value,stream:false,messages:[{role:'user',content:prompt}]};
+  if(json)body.format='json';
+  const r=await fetch($('host').value+'/api/chat',{method:'POST',body:JSON.stringify(body)});
+  if(!r.ok)throw new Error('Ollama error '+r.status);
+  return (await r.json()).message.content;
+}
+function busy(el,msg){el.hidden=false;el.textContent=msg}
+function need(){const q=$('q').value.trim();if(!q){alert('Type a question first');throw 0}return q}
+
+async function explain(){
+  const q=need();
+  busy($('exp'),'Thinking...');$('flow').hidden=true;$('codebox').hidden=true;
+  try{
+    const out=await ask(`You are a patient programming tutor. Problem: "${q}"
+Explain the LOGIC only (no full code) so a beginner understands it deeply: 1) what the problem asks, 2) the idea in plain words, 3) step-by-step algorithm, 4) a small worked example, 5) common mistakes.
+Then give a flowchart as Mermaid inside a block that starts with \`\`\`mermaid and uses "flowchart TD" with simple labels in square brackets, no special characters in labels.`);
+    const m=out.match(/```mermaid([\s\S]*?)```/);
+    $('exp').textContent=out.replace(/```mermaid[\s\S]*?```/,'').trim();
+    if(m){
+      $('flow').hidden=false;$('flow').innerHTML='<b>Flowchart</b><div id="fc"></div>';
+      try{const {svg}=await mermaid.render('g'+Date.now(),m[1].trim());$('fc').innerHTML=svg}
+      catch(e){$('fc').innerHTML='<pre></pre>';$('fc').firstChild.textContent=m[1].trim()}
+    }
+    $('codebox').hidden=false;
+  }catch(e){$('exp').textContent='Error: '+e.message}
+}
+
+async function getCode(){
+  const q=need(),l=$('lang').value;
+  busy($('code'),'Writing code...');
+  try{$('code').textContent=await ask(`Write clean, commented ${l} code for: "${q}". Then explain it line by line briefly.`)}
+  catch(e){$('code').textContent='Error: '+e.message}
+}
+
+async function startQuiz(){
+  const q=need();
+  busy($('quiz'),'Generating 10 easy questions...');$('rescue').hidden=true;
+  idx=0;fails=0;wrongLog=[];
+  try{
+    const out=await ask(`Create 10 EASY multiple-choice programming questions that build up to solving: "${q}".
+Return ONLY JSON: {"questions":[{"q":"...","options":["A","B","C","D"],"answer":0,"hint":"..."}]} where answer is the 0-based index of the correct option.`,true);
+    questions=JSON.parse(out).questions.slice(0,10);
+    show();
+  }catch(e){$('quiz').textContent='Could not build quiz ('+e.message+'). Try again.'}
+}
+
+function show(){
+  if(idx>=questions.length){$('quiz').innerHTML=`<h3 class="ok">Quiz complete! Mistakes: ${fails}</h3>`;return}
+  const k=questions[idx];
+  $('quiz').innerHTML=`<div class="small">Question ${idx+1}/10 · Mistakes: ${fails}</div><h3></h3><div id="opts"></div><button class="alt" id="hb">Show hint</button><div id="hint" class="small"></div><div id="fb"></div>`;
+  $('quiz').querySelector('h3').textContent=k.q;
+  k.options.forEach((o,i)=>{const b=document.createElement('button');b.className='opt';b.textContent=o;b.onclick=()=>pick(i);$('opts').appendChild(b)});
+  $('hb').onclick=()=>$('hint').textContent='Hint: '+k.hint;
+}
+
+function pick(i){
+  const k=questions[idx];
+  if(i===k.answer){$('fb').innerHTML='<p class="ok">Correct!</p>';idx++;setTimeout(show,700)}
+  else{
+    fails++;wrongLog.push(k.q+' (you chose: '+k.options[i]+')');
+    $('hint').textContent='Hint: '+k.hint;
+    $('fb').innerHTML='<p class="bad">Not quite, try again using the hint.</p>';
+    if(fails>=3)rescue();
+  }
+}
+
+async function rescue(){
+  const q=$('q').value.trim(),l=$('lang').value;
+  $('quiz').hidden=true;busy($('rescue'),'You struggled a few times. Here is the full solution and personal advice...');
+  try{
+    const out=await ask(`A student failed these quiz questions: ${wrongLog.join('; ')}. Problem: "${q}".
+1) Give the exact ${l} code with comments. 2) Explain which concepts the student is weak at. 3) Give 5 concrete suggestions to improve their coding skill.`);
+    $('rescue').textContent=out;
+  }catch(e){$('rescue').textContent='Error: '+e.message}
+}
+</script>
+</body>
+</html>
